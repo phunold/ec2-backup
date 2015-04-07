@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+# FIXME catch ImportError: No module named boto.ec2
 import boto.ec2
 
 if 'EC2_BACKUP_VERBOSE' in os.environ:
@@ -16,10 +17,17 @@ if 'EC2_HOME' in os.environ:
 if 'EC2_PRIVATE_KEY' in os.environ:
   print os.environ['EC2_PRIVATE_KEY']
 
+# Connect to EC2
+# print boto.config.__dict__
+# check if credentials setup
+# boto.exception.NoAuthHandlerFound: No handler was ready to authenticate. 1 handlers were checked. ['QuerySignatureV2AuthHandler'] Check your credentials
+try:
+  ec2 = boto.ec2.connect_to_region("us-east-1")
+except boto.exception.NoAuthHandlerFound:
+  print "Could not authenticate to ec2!"
+  print "run 'aws configure' or setup EC2 keys"
+  sys.exit(1)
 
-# 
-ec2 = boto.ec2.connect_to_region("us-east-1")
-print ec2
 # FIXME should use 'ec2.get_all_reservations' but this boto version seems does not have it
 reservations = ec2.get_all_instances()
 for reservation in reservations:
@@ -29,7 +37,7 @@ for reservation in reservations:
     ip = instance.ip_address
     state = instance.state
     ami = instance.image_id
-#    print instance.__dict__.keys()
+#   print instance.__dict__.keys()
     print "Name:", instance_name, "ID:", instance_id, "IP:", ip, "State:", state, "AMI:", ami
 
 sys.exit()
