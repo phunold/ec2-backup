@@ -7,6 +7,13 @@ import sys
 import boto.ec2
 import optparse
 
+#calculate the volume size
+def du(path):
+    return subprocess.check_output(['du','-sh', path]).split()[0].decode('utf-8')
+
+if __name__ == "__main__":
+    print(du('.'))
+
 # Define command line options
 usage = "Usage: %prog [-h] [-m method] [-v volume-id] dir"
 description = "ec2-backup -- backup a directory into Elastic Block Storage (EBS)"
