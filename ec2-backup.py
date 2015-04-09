@@ -5,7 +5,41 @@ import subprocess
 import sys
 # FIXME catch ImportError: No module named boto.ec2
 import boto.ec2
+import optparse
 
+# Define command line options
+usage = "Usage: %prog [-h] [-m method] [-v volume-id] dir"
+description = "ec2-backup -- backup a directory into Elastic Block Storage (EBS)"
+parser = optparse.OptionParser(usage=usage, description=description)
+parser.add_option('-m', '--method', dest="method", default="dd", choices=['dd', 'rsync'])
+parser.add_option('-v', '--volume-id', dest="volume_id")
+# Parse options
+options, args = parser.parse_args()
+
+# Check if Directory was set
+if len(args) == 0:
+  print "Missing Directory argument!"
+  parser.print_help()
+  sys.exit(1)
+ 
+# print if DEBUG
+print 'method    :', options.method
+print 'volumeid  :', options.volume_id
+print 'remaining :', args
+
+# check if args is set and is of type directory
+backupdir = args[0]
+
+if not (os.path.exists(backupdir) and os.path.isdir(backupdir)):
+  print "not a directory or does not exist:", backupdir
+  sys.exit(1)
+
+# DEBUG
+print "Backup directory if:", backupdir
+print "Size of directory in bytes:", os.path.getsize(backupdir)
+# estimate size of directory
+
+# FIXME
 if 'EC2_BACKUP_VERBOSE' in os.environ:
   print os.environ['EC2_BACKUP_VERBOSE']
 if 'AWS_CONFIG_FILE' in os.environ:
