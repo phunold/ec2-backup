@@ -60,6 +60,9 @@ def estimate_size(path):
   # proc.stdout is a file descriptor and requires readline
   # [:-1] returns everything but the last character 
   return proc.stdout.readline().split()[0][:-1]
+  
+#command to attach the volume on the selected device (etc /dev/..)
+volume.attach(instanceid, device)
 
 def Main():
 
