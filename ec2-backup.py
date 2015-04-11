@@ -10,6 +10,11 @@ import optparse
 #calculate the volume size
 def du(path):
     return subprocess.check_output(['du','-sh', path]).split()[0].decode('utf-8')
+    
+#function to calculate volume in Gb (this is going to be used later with the result of the function above) I will fix it.
+def GB(size):
+    Size = (size/(1024*1024*1024))+1
+    return Size
 
 if __name__ == "__main__":
     print(du('.'))
