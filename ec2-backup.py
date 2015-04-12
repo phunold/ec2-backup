@@ -11,10 +11,66 @@ import time
 
 # global settings
 region = 'us-east-1'
+zone = region + 'a'
+
 # Ubuntu 12.04 LTS AMD64 EBS
 # http://cloud-images.ubuntu.com/locator/ec2/ 
 ami = 'ami-00615068'
 ssh_user = 'ubuntu'
+
+def exec_remote(login, remote_command):
+  # login 'ssh_user'@'ec2.host.amazon.com'
+  # -t simulate terminal
+  # 
+  command_list = ['ssh','-v','-t','-o','StrictHostKeyChecking=no']
+
+  print 'remote_command', remote_command
+  print 'login string', login
+
+  # get additional ssh options from environment and append to comamnd_list
+  if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
+    command_list.extend(os.environ['EC2_BACKUP_FLAGS_SSH'].split())
+
+  # add login user@target and the remote command to execute
+  command_list.append(login)
+  command_list.extend(remote_command.split())
+
+  print 'Command list:', command_list
+
+  # Popen expects a list of arguments
+  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+  # Test result
+  result = ssh.stdout.readlines()
+  if result == []:
+     error = ssh.stderr.readlines()
+     print >>sys.stderr, "ERROR: %s" % error
+  else:
+     print result
+
+  # next try
+  time.sleep(10)
+  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+  # Test result
+  result = ssh.stdout.readlines()
+  if result == []:
+     error = ssh.stderr.readlines()
+     print >>sys.stderr, "ERROR: %s" % error
+  else:
+     print result
+
+  # next try
+  time.sleep(10)
+  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+  # Test result
+  result = ssh.stdout.readlines()
+  if result == []:
+     error = ssh.stderr.readlines()
+     print >>sys.stderr, "ERROR: %s" % error
+  else:
+     print result
 
 def connect_ec2(region):
   # Connect to EC2
@@ -27,10 +83,16 @@ def connect_ec2(region):
     print "Could not authenticate to ec2!"
     print "run 'aws configure' or setup EC2 keys"
     sys.exit(1)
+  
+  # connect_to_region return None if region is unkown or incorrect
+  if not connection:
+    print 'Wrong or unknown region:', region
+    sys.exit(1)
 
   return connection
-
+  
 def create_ec2_instance(connection,ami):
+  # FIXME key needs to be default or from ENV
   reservations = connection.run_instances(ami,key_name='pstam-keypair')
   # print instance.__dict__
   # ['RunInstancesResponse', 'region', 'instances', 'connection', 'requestId', 'groups', 'id', 'owner_id']
@@ -58,12 +120,9 @@ def estimate_size(path):
   proc = subprocess.Popen(['du','--summarize', '--block-size=G', path], stdout=PIPE, stderr=devnull)
   # example output: 2G<tab>/var 
   # proc.stdout is a file descriptor and requires readline
-  # [:-1] returns everything but the last character 
+  # [:-1] returns everything but the last character, here it drops the G
   return proc.stdout.readline().split()[0][:-1]
   
-#command to attach the volume on the selected device (etc /dev/..)
-volume.attach(instanceid, device)
-
 def Main():
 
   # 
@@ -111,28 +170,68 @@ def Main():
     parser.error('not a directory: %s' % backupdir )
 
   # 
-  print 'Estimate Directory size in GB: %s' % estimate_size(backupdir)
+  # calculate size of directory in GB
+  # 
+  size = estimate_size(backupdir)
+  print 'Estimate Directory size in GB: %s' % size
 
   #
   # run new EC2 instance 
   # 
   connection = connect_ec2(region)
 
-  server_instance = create_ec2_instance(connection, ami)
+  instance = create_ec2_instance(connection, ami)
 
-  fqdn = server_instance.public_dns_name
-  print 'server hostname: ', fqdn
+  # 
+  # Prepare EBS Volume
+  #  
+
+  # create or get EBS volume
+  if options.volumeid:
+    # FIXME check if volume actually exists
+    volume = connection.get_all_volumes([vol.id])[0]
+  else:
+    volume = connection.create_volume(size, zone)
+    print 'Creating volume (size/zone): (%s/%s)', size, zone
+
+  status = volume.update()
+  while status == 'creating':
+    print 'Waiting for volume to be ready:', status
+    time.sleep(5)
+    status = volume.update()
+  
+  print 'zone', volume.zone
+
+
+  # attach volume to new instance
+  # FIXME just prints "attaching" what does that mean, ok? or nok? 
+  print connection.attach_volume(volume.id, instance.id, '/dev/sdh')
 
   #
   # SSH/TAR/Stuff
   #
+  # public_dns_name is unicode format
+  fqdn = str(instance.public_dns_name)
+  print 'server hostname: ', fqdn
+
+  #
+  # Prepare mount point for rsync
+  # 
+  # mkfs.ext4 /dev/xvdh
+  # sudo mkdir /backup
+  # sudo mount /dev/xvdh /backup
+  #
+  # give instance time to properly boot
+  time.sleep(20)
+  # 
+  exec_remote(ssh_user + '@' + fqdn, 'uname -a')
 
   #
   # finally terminate the instance
   #
-  print 'Cleanup time ID terminating: ', server_instance.id
-  time.sleep(10)
-  connection.terminate_instances(instance_ids=[server_instance.id])
+  #print 'Cleanup time ID terminating: ', instance.id
+  #time.sleep(10)
+  #connection.terminate_instances(instance_ids=[instance.id])
  
   sys.exit(0)
 
@@ -151,21 +250,6 @@ def print_env():
 
 
 
-
-def myssh():
-  HOST="54.160.192.98" # test EC2 instance Fedora 20 ami-3b361952
-  COMMAND="sudo id"
-  #
-  ssh = subprocess.Popen(["ssh", "-t", "-i", os.environ['EC2_PRIVATE_KEY'], "fedora@%s" % HOST, COMMAND],
-                        shell=False,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE)
-  result = ssh.stdout.readlines()
-  if result == []:
-     error = ssh.stderr.readlines()
-     print >>sys.stderr, "ERROR: %s" % error
-  else:
-     print result
 
 #
 # run Main
