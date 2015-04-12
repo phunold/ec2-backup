@@ -10,8 +10,20 @@ import optparse
 import time
 
 # global settings
+# 
+# Availablity Zone and region
 region = 'us-east-1'
 zone = region + 'a'
+
+# devices and disks
+# for more information about disk visit:
+# https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/block-device-mapping-concepts.html
+#
+# we found that /dev/sdh persistently becomes /dev/xvdh
+# 
+ebs_device = '/dev/sdh'  # block device when attaching volume
+device     = '/dev/xvdh' # block device when available to server 
+mountpoint = '/backup'   # directory only required for rsync
 
 # Ubuntu 12.04 LTS AMD64 EBS
 # http://cloud-images.ubuntu.com/locator/ec2/ 
@@ -19,10 +31,12 @@ ami = 'ami-00615068'
 ssh_user = 'ubuntu'
 
 def exec_remote(login, remote_command):
-  # login 'ssh_user'@'ec2.host.amazon.com'
-  # -t simulate terminal
-  # 
-  command_list = ['ssh','-v','-t','-o','StrictHostKeyChecking=no']
+  # login contains 'ssh_user@ec2.host.amazon.com'
+  # -t simulate terminal required for sudo ???
+  # FIXME
+  # StrictHostKeyChecking maybe delegate to user 
+  # and make it part of EC2_BACKUP_FLAGS_SSH
+  command_list = ['ssh','-t','-o','StrictHostKeyChecking=no']
 
   print 'remote_command', remote_command
   print 'login string', login
@@ -32,8 +46,8 @@ def exec_remote(login, remote_command):
     command_list.extend(os.environ['EC2_BACKUP_FLAGS_SSH'].split())
 
   # add login user@target and the remote command to execute
-  command_list.append(login)
-  command_list.extend(remote_command.split())
+  command_list.append(login) # single string
+  command_list.extend(remote_command.split()) # multiple strings potentially
 
   print 'Command list:', command_list
 
@@ -45,32 +59,10 @@ def exec_remote(login, remote_command):
   if result == []:
      error = ssh.stderr.readlines()
      print >>sys.stderr, "ERROR: %s" % error
+     return False
   else:
      print result
-
-  # next try
-  time.sleep(10)
-  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-  # Test result
-  result = ssh.stdout.readlines()
-  if result == []:
-     error = ssh.stderr.readlines()
-     print >>sys.stderr, "ERROR: %s" % error
-  else:
-     print result
-
-  # next try
-  time.sleep(10)
-  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
-  # Test result
-  result = ssh.stdout.readlines()
-  if result == []:
-     error = ssh.stderr.readlines()
-     print >>sys.stderr, "ERROR: %s" % error
-  else:
-     print result
+     return True
 
 def connect_ec2(region):
   # Connect to EC2
@@ -199,32 +191,45 @@ def Main():
     print 'Waiting for volume to be ready:', status
     time.sleep(5)
     status = volume.update()
-  
-  print 'zone', volume.zone
-
 
   # attach volume to new instance
   # FIXME just prints "attaching" what does that mean, ok? or nok? 
-  print connection.attach_volume(volume.id, instance.id, '/dev/sdh')
+  # ebs_device looks like this: '/dev/sdh' but will become /dev/xvdh on EC2 HVM
+  print connection.attach_volume(volume.id, instance.id, ebs_device)
 
   #
   # SSH/TAR/Stuff
   #
   # public_dns_name is unicode format
   fqdn = str(instance.public_dns_name)
-  print 'server hostname: ', fqdn
+  login = ssh_user + '@' + fqdn 
 
+  # FIXME
+  # if all attempts failed we have an instance that's not used
+  # and an extra volume attached to it that's not used
+  # maybe we should clean up.
+
+  # the very first time we will try 5 times to connect instance and give time to properly boot
+  for i in range(5):
+    # exec_remote returns True or False
+    if exec_remote(login, 'uname -a'):
+      break
+    else:
+      time.sleep(10)
+  
   #
   # Prepare mount point for rsync
   # 
   # mkfs.ext4 /dev/xvdh
   # sudo mkdir /backup
   # sudo mount /dev/xvdh /backup
-  #
-  # give instance time to properly boot
-  time.sleep(20)
-  # 
-  exec_remote(ssh_user + '@' + fqdn, 'uname -a')
+  #'hanning(%d).pdf' % num 
+  exec_remote(login, '[ -b %s] && echo success' % device)
+  exec_remote(login, 'sudo mkfs.ext4 %s' % device )
+  exec_remote(login, 'sudo mkdir %s' % mountpoint)
+  exec_remote(login, 'sudo mount %s %s' %(device,mountpoint))
+  exec_remote(login, 'mount')
+  exec_remote(login, 'df -h %s' % mountpoint)
 
   #
   # finally terminate the instance
