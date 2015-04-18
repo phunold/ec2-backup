@@ -20,7 +20,7 @@ zone = region + 'a'
 # https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/block-device-mapping-concepts.html
 #
 # we found that /dev/sdh persistently becomes /dev/xvdh
-# 
+# please don't change unless you know what you're doing
 ebs_device = '/dev/sdh'  # block device when attaching volume
 device     = '/dev/xvdh' # block device when available to server 
 mountpoint = '/backup'   # directory only required for rsync
@@ -30,6 +30,7 @@ mountpoint = '/backup'   # directory only required for rsync
 ami = 'ami-00615068'
 ssh_user = 'ubuntu'
 
+
 def exec_remote(login, remote_command):
   # login contains 'ssh_user@ec2.host.amazon.com'
   # -t simulate terminal required for sudo ???
@@ -37,9 +38,6 @@ def exec_remote(login, remote_command):
   # StrictHostKeyChecking maybe delegate to user 
   # and make it part of EC2_BACKUP_FLAGS_SSH
   command_list = ['ssh','-t','-o','StrictHostKeyChecking=no']
-
-  print 'remote_command', remote_command
-  print 'login string', login
 
   # get additional ssh options from environment and append to comamnd_list
   if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
@@ -49,20 +47,24 @@ def exec_remote(login, remote_command):
   command_list.append(login) # single string
   command_list.extend(remote_command.split()) # multiple strings potentially
 
-  print 'Command list:', command_list
+  return execute(command_list)
 
+def execute(commands):
+  print "cmd:", " ".join(commands)
   # Popen expects a list of arguments
-  ssh = subprocess.Popen(command_list, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  #proc = subprocess.Popen(commands, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  try:
+    result = subprocess.check_output(commands, stderr=subprocess.STDOUT)
+  except subprocess.CalledProcessError, e:
+    # Test result
+    print "cmd:", e.cmd
+    print "cmd:", ' '.join(e.cmd)
+    print "rc:", e.returncode
+    print "output", e.output
+    return False
 
-  # Test result
-  result = ssh.stdout.readlines()
-  if result == []:
-     error = ssh.stderr.readlines()
-     print >>sys.stderr, "ERROR: %s" % error
-     return False
-  else:
-     print result
-     return True
+  print result
+  return True
 
 def connect_ec2(region):
   # Connect to EC2
@@ -73,7 +75,6 @@ def connect_ec2(region):
     connection = boto.ec2.connect_to_region(region)
   except boto.exception.NoAuthHandlerFound:
     print "Could not authenticate to ec2!"
-    print "run 'aws configure' or setup EC2 keys"
     sys.exit(1)
   
   # connect_to_region return None if region is unkown or incorrect
@@ -85,7 +86,11 @@ def connect_ec2(region):
   
 def create_ec2_instance(connection,ami):
   # FIXME key needs to be default or from ENV
-  reservations = connection.run_instances(ami,key_name='pstam-keypair')
+  try:
+    reservations = connection.run_instances(ami,key_name='pstam-keypair')
+  except boto.exception.EC2ResponseError, e:
+    print "Error running new instance:", e
+    sys.exit(1)
   # print instance.__dict__
   # ['RunInstancesResponse', 'region', 'instances', 'connection', 'requestId', 'groups', 'id', 'owner_id']
   instance = reservations.instances[0] 
@@ -184,7 +189,7 @@ def Main():
     volume = connection.get_all_volumes([vol.id])[0]
   else:
     volume = connection.create_volume(size, zone)
-    print 'Creating volume (size/zone): (%s/%s)', size, zone
+    print 'Creating volume (size/zone): (%s/%s)' % (size, zone)
 
   status = volume.update()
   while status == 'creating':
@@ -212,25 +217,52 @@ def Main():
   # the very first time we will try 5 times to connect instance and give time to properly boot
   for i in range(5):
     # exec_remote returns True or False
-    if exec_remote(login, 'uname -a'):
+    if exec_remote(login, 'uname'):
       break
     else:
       time.sleep(10)
-  
-  #
-  # Prepare mount point for rsync
-  # 
-  # mkfs.ext4 /dev/xvdh
-  # sudo mkdir /backup
-  # sudo mount /dev/xvdh /backup
-  #'hanning(%d).pdf' % num 
-  exec_remote(login, '[ -b %s] && echo success' % device)
-  exec_remote(login, 'sudo mkfs.ext4 %s' % device )
-  exec_remote(login, 'sudo mkdir %s' % mountpoint)
-  exec_remote(login, 'sudo mount %s %s' %(device,mountpoint))
-  exec_remote(login, 'mount')
-  exec_remote(login, 'df -h %s' % mountpoint)
+  else:
+    print "ERROR could not connect host:", login  
+    sys.exit(1)
 
+  if (method == 'dd'):
+    print 'dd not implemented'
+    # tar -cvf - {1} | ssh key \'dd of={2}\' (login, backupdir, str(attach)
+  else:
+    #
+    # Prepare mount point for rsync
+    # 
+    # FIXME
+    # check commands executed sucessfully
+    # 
+    # check if block device exists
+    exec_remote(login, '[ -b %s ] && echo success' % device)
+    # create ext4 filesystem (other fstypes may feasible)
+    exec_remote(login, 'sudo mkfs.ext4 %s && echo success' % device )
+    # create directory for mountpoint
+    exec_remote(login, 'sudo mkdir %s && echo success' % mountpoint)
+    # FIXME
+    # rsync cannot change timestamps need additional mount flags set (atime?)
+    exec_remote(login, 'sudo mount %s %s && echo success' %(device,mountpoint))
+    # chown to default ssh_user (ubuntu) for permission
+    exec_remote(login, 'sudo chown -R %s:%s /backup && echo success' % (ssh_user,ssh_user))
+
+    #
+    # rsync
+    #
+    ssh_opts = ''
+    # FIXME this is redundant to exec_remote
+    # get additional ssh options from environment
+    if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
+      ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
+    
+    # execute function expects a "list" of commands
+    rsync_cmd = ['rsync','-avz', '--delete', '-e']
+    rsync_cmd.append('ssh %s' % ssh_opts)
+    rsync_cmd.extend(('%s %s:%s' % (backupdir,login,mountpoint)).split())
+
+    execute(rsync_cmd)
+    
   #
   # finally terminate the instance
   #
@@ -252,9 +284,6 @@ def print_env():
     print os.environ['EC2_HOME']
   if 'EC2_PRIVATE_KEY' in os.environ:
     print os.environ['EC2_PRIVATE_KEY']
-
-
-
 
 #
 # run Main
