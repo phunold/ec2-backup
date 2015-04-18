@@ -225,7 +225,7 @@ def Main():
     print "ERROR could not connect host:", login  
     sys.exit(1)
 
-  if (method == 'dd'):
+  if (options.method == 'dd'):
     print 'dd not implemented'
     # tar -cvf - {1} | ssh key \'dd of={2}\' (login, backupdir, str(attach)
   else:
