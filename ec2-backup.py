@@ -270,8 +270,11 @@ def Main():
     ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
   
   if (options.method == 'dd'):
-    info('dd not implemented')
-    # tar -cvf - {1} | ssh key \'dd of={2}\' (login, backupdir, str(attach)
+    dd_cmd = ['tar','-cvf', '-', backupdir, '|']
+    dd_cmd.extend(('ssh %s %s' % (ssh_opts, login)).split())
+    dd_cmd.append('\"sudo dd of=%s\"' % device)
+
+    execute(dd_cmd)
   else:
     #
     # Prepare mount point for rsync
