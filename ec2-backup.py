@@ -12,7 +12,8 @@ import time # for sleep
 #
 # global settings
 # 
-# Availablity Zone and region
+# Prefered Region and zone
+# taken from volume if provided
 region = 'us-east-1'
 zone = region + 'a'
 
@@ -99,12 +100,12 @@ def parse_aws_opts(flags):
     opts[key.replace('-','_')] = value
   return opts
 
-def create_ec2_instance(connection,ami,flags):
+def create_ec2_instance(connection,ami,placement,flags):
   # we need to parse the options
   # see 'parse_aws_opts' for more info
   aws_opts = parse_aws_opts(flags)
   try:
-    reservations = connection.run_instances(ami, key_name=aws_opts['key_name'], instance_type=aws_opts['instance_type'], security_groups=aws_opts['security_groups'])
+    reservations = connection.run_instances(ami, placement=placement, key_name=aws_opts['key_name'], instance_type=aws_opts['instance_type'], security_groups=aws_opts['security_groups'])
   except boto.exception.EC2ResponseError, e:
     fatal("Error running new instance: %s" % e)
 
@@ -165,7 +166,6 @@ def Main():
   if len(args) < 1:
 	parser.error('missing directory.')
    
-
   # 
   # additional validation on the directory 
   # 
@@ -214,6 +214,7 @@ def Main():
     # FIXME check if volume actually exists
     info('Retrieving existing volume: %s' % options.volumeid)
     volume = connection.get_all_volumes([options.volumeid])[0]
+    # set zone from this volume to make sure we can attach to instance
   else:
     volume = connection.create_volume(size, zone)
     info('Creating volume of size: %s' % size)
@@ -229,9 +230,9 @@ def Main():
   volume.add_tag("Name","ec2-backup")
 
   #
-  # run new EC2 instance 
+  # run new EC2 instance in zone from volume
   # 
-  instance = create_ec2_instance(connection, ami, aws_opts)
+  instance = create_ec2_instance(connection, ami, volume.zone, aws_opts)
   # convert to string since public_dns_name is unicode format
   fqdn  = str(instance.public_dns_name)
   login = ssh_user + '@' + fqdn 
