@@ -7,8 +7,9 @@ import sys
 # FIXME catch ImportError: No module named boto.ec2
 import boto.ec2
 import optparse
-import time
+import time # for sleep
 
+#
 # global settings
 # 
 # Availablity Zone and region
@@ -30,6 +31,15 @@ mountpoint = '/backup'   # directory only required for rsync
 ami = 'ami-00615068'
 ssh_user = 'ubuntu'
 
+def info(msg):
+  if 'EC2_BACKUP_VERBOSE' in os.environ:
+    now = time.strftime("%c")
+    print 'INFO %s: %s' % (now, msg)
+
+def fatal(msg):
+  now = time.strftime("%c")
+  print 'FATAL %s: %s' % (now, msg)
+  sys.exit(1)
 
 def exec_remote(login, remote_command):
   # login contains 'ssh_user@ec2.host.amazon.com'
@@ -50,20 +60,15 @@ def exec_remote(login, remote_command):
   return execute(command_list)
 
 def execute(commands):
-  print "cmd:", " ".join(commands)
-  # Popen expects a list of arguments
-  #proc = subprocess.Popen(commands, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  # subprocess expects a list of arguments
+  info(" ".join(commands))
   try:
     result = subprocess.check_output(commands, stderr=subprocess.STDOUT)
-  except subprocess.CalledProcessError, e:
-    # Test result
-    print "cmd:", e.cmd
-    print "cmd:", ' '.join(e.cmd)
-    print "rc:", e.returncode
-    print "output", e.output
+  except subprocess.CalledProcessError, error:
+    info(error)
     return False
 
-  print result
+  info(result)
   return True
 
 def connect_ec2(region):
@@ -74,33 +79,44 @@ def connect_ec2(region):
   try:
     connection = boto.ec2.connect_to_region(region)
   except boto.exception.NoAuthHandlerFound:
-    print "Could not authenticate to ec2!"
-    sys.exit(1)
+    fatal("Could not authenticate to ec2!")
   
   # connect_to_region return None if region is unkown or incorrect
   if not connection:
-    print 'Wrong or unknown region:', region
-    sys.exit(1)
+    fatal('Wrong or unknown region: %s' % region)
 
   return connection
   
-def create_ec2_instance(connection,ami):
-  # FIXME key needs to be default or from ENV
+def parse_aws_opts(flags):
+  # since we are using boto the parameter options are passed a bit different than on the aws cli tool
+  # example: aws ec2 run-instances --image-id ami-bc8131d4 --key-name ssh-aws-keypair
+  # reference default value from boto ec2:
+  # http://boto.readthedocs.org/en/latest/ref/ec2.html#boto.ec2.connection.EC2Connection.run_instances
+  opts = {'key_name': None, 'instance_type': 'm1.small', 'security_groups': None}
+  for flag in flags.strip().split('--')[1:]:
+    key,value = flag.split()
+    # all parameters in ec2.boto are with underscore instead of dash
+    opts[key.replace('-','_')] = value
+  return opts
+
+def create_ec2_instance(connection,ami,flags):
+  # we need to parse the options
+  # see 'parse_aws_opts' for more info
+  aws_opts = parse_aws_opts(flags)
   try:
-    reservations = connection.run_instances(ami,key_name='pstam-keypair')
+    reservations = connection.run_instances(ami, key_name=aws_opts['key_name'], instance_type=aws_opts['instance_type'], security_groups=aws_opts['security_groups'])
   except boto.exception.EC2ResponseError, e:
-    print "Error running new instance:", e
-    sys.exit(1)
-  # print instance.__dict__
-  # ['RunInstancesResponse', 'region', 'instances', 'connection', 'requestId', 'groups', 'id', 'owner_id']
+    fatal("Error running new instance: %s" % e)
+
+  # get instance and wait until ready
   instance = reservations.instances[0] 
   status = instance.update()
   while status == 'pending':
-    print 'Waiting for instance to be ready:', status
+    info('Waiting for instance to be ready: %s' % status)
     time.sleep(5)
     status = instance.update()
   
-  # add EC2 Tagname
+  # add EC2 for convenience
   instance.add_tag('Name', 'EC2-Backup Helper Instance')
 
   # return the freshly create instance object
@@ -125,7 +141,6 @@ def Main():
   # 
   # parse options
   # 
-  
   defaults = {'method': 'dd', 'volumeid': None}
 
   usage = "%prog [-h] [-m method] [-v volume-id] dir"
@@ -150,10 +165,6 @@ def Main():
   if len(args) < 1:
 	parser.error('missing directory.')
    
-  # print if DEBUG
-  print 'method    :', options.method
-  print 'volumeid  :', options.volumeid
-  print 'remaining :', args
 
   # 
   # additional validation on the directory 
@@ -166,11 +177,29 @@ def Main():
   if not os.path.isdir(backupdir):
     parser.error('not a directory: %s' % backupdir )
 
+  # print if DEBUG
+  info('Backup method    : %s' % options.method)
+  info('Backup volumeid  : %s' % options.volumeid)
+  info('Backup directory : %s' % backupdir)
+
+  #
+  # check environment variables
+  # 
+  ssh_opts = ''
+  if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
+    ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
+  info('Backup SSH flags: %s' % ssh_opts)
+  
+  aws_opts = ''
+  if 'EC2_BACKUP_FLAGS_AWS' in os.environ:
+    aws_opts = os.environ['EC2_BACKUP_FLAGS_AWS']
+  info('Backup AWS flags: %s' % aws_opts)
+
   # 
   # calculate size of directory in GB
   # 
   size = estimate_size(backupdir)
-  print 'Estimate Directory size in GB: %s' % size
+  info('Local directory size in GB: %s' % size)
 
   #
   # Connect to EC2 Region
@@ -183,16 +212,17 @@ def Main():
   # create or retrieve EBS volume
   if options.volumeid:
     # FIXME check if volume actually exists
+    info('Retrieving existing volume: %s' % options.volumeid)
     volume = connection.get_all_volumes([options.volumeid])[0]
   else:
     volume = connection.create_volume(size, zone)
-    print 'Creating volume (size/zone): (%s/%s)' % (size, zone)
+    info('Creating volume of size: %s' % size)
 
     # wait until volume is ready
     status = volume.update()
     while status == 'creating':
-      print 'Waiting for volume to be ready:', status
-      time.sleep(5)
+      info('Waiting for volume to be ready: %s' % status)
+      time.sleep(2)
       status = volume.update()
 
   # update a name for convenience
@@ -201,7 +231,7 @@ def Main():
   #
   # run new EC2 instance 
   # 
-  instance = create_ec2_instance(connection, ami)
+  instance = create_ec2_instance(connection, ami, aws_opts)
   # convert to string since public_dns_name is unicode format
   fqdn  = str(instance.public_dns_name)
   login = ssh_user + '@' + fqdn 
@@ -213,14 +243,11 @@ def Main():
   try:
     connection.attach_volume(volume.id, instance.id, ebs_device)
   except boto.exception.EC2ResponseError, e:
-    print 'Failed to attach volume:', volume.id
-    print e
-    sys.exit(1)
+    fatal('Failed to attach volume: %s %s' % (volume.id, e))
 
   # FIXME
-  # if all attempts failed we have an instance that's not used
+  # if all attempts to connect fail we have an instance that's not used
   # and an extra volume attached to it that's not used
-  # maybe we should clean up.
 
   # try 5 times to connect instance and give time to boot up
   for i in range(5):
@@ -230,14 +257,19 @@ def Main():
     else:
       time.sleep(10)
   else:
-    print "ERROR could not connect host:", login  
-    sys.exit(1)
+    fatal("ERROR could not connect host: %s" % login)
 
   #
   # backup with dd or rsync
   #
+  # FIXME this is redundant to exec_remote
+  # get additional ssh options from environment
+  ssh_opts = ''
+  if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
+    ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
+  
   if (options.method == 'dd'):
-    print 'dd not implemented'
+    info('dd not implemented')
     # tar -cvf - {1} | ssh key \'dd of={2}\' (login, backupdir, str(attach)
   else:
     #
@@ -261,13 +293,8 @@ def Main():
     #
     # rsync
     #
-    ssh_opts = ''
-    # FIXME this is redundant to exec_remote
-    # get additional ssh options from environment
-    if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
-      ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
-    
     # execute function expects a "list" of commands
+    # FIXME we create a mirror and not backup with --delete maybe remove it?
     rsync_cmd = ['rsync','-avz', '--delete', '-e']
     rsync_cmd.append('ssh %s' % ssh_opts)
     rsync_cmd.extend(('%s %s:%s' % (backupdir,login,mountpoint)).split())
@@ -281,21 +308,9 @@ def Main():
   #time.sleep(10)
   #connection.terminate_instances(instance_ids=[instance.id])
  
+  # output volume identifier in any case
   print volume.id
   sys.exit(0)
-
-def print_env():
-  # FIXME
-  if 'EC2_BACKUP_VERBOSE' in os.environ:
-    print os.environ['EC2_BACKUP_VERBOSE']
-  if 'AWS_CONFIG_FILE' in os.environ:
-    print os.environ['AWS_CONFIG_FILE']
-  if 'EC2_CERT' in os.environ:
-    print os.environ['EC2_CERT']
-  if 'EC2_HOME' in os.environ:
-    print os.environ['EC2_HOME']
-  if 'EC2_PRIVATE_KEY' in os.environ:
-    print os.environ['EC2_PRIVATE_KEY']
 
 #
 # run Main
