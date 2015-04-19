@@ -173,48 +173,56 @@ def Main():
   print 'Estimate Directory size in GB: %s' % size
 
   #
-  # run new EC2 instance 
-  # 
+  # Connect to EC2 Region
+  #
   connection = connect_ec2(region)
-
-  instance = create_ec2_instance(connection, ami)
 
   # 
   # Prepare EBS Volume
   #  
-
-  # create or get EBS volume
+  # create or retrieve EBS volume
   if options.volumeid:
     # FIXME check if volume actually exists
-    volume = connection.get_all_volumes([vol.id])[0]
+    volume = connection.get_all_volumes([options.volumeid])[0]
   else:
     volume = connection.create_volume(size, zone)
     print 'Creating volume (size/zone): (%s/%s)' % (size, zone)
 
-  status = volume.update()
-  while status == 'creating':
-    print 'Waiting for volume to be ready:', status
-    time.sleep(5)
+    # wait until volume is ready
     status = volume.update()
+    while status == 'creating':
+      print 'Waiting for volume to be ready:', status
+      time.sleep(5)
+      status = volume.update()
 
-  # attach volume to new instance
-  # FIXME just prints "attaching" what does that mean, ok? or nok? 
-  # ebs_device looks like this: '/dev/sdh' but will become /dev/xvdh on EC2 HVM
-  print connection.attach_volume(volume.id, instance.id, ebs_device)
+  # update a name for convenience
+  volume.add_tag("Name","ec2-backup")
 
   #
-  # SSH/TAR/Stuff
-  #
-  # public_dns_name is unicode format
-  fqdn = str(instance.public_dns_name)
+  # run new EC2 instance 
+  # 
+  instance = create_ec2_instance(connection, ami)
+  # convert to string since public_dns_name is unicode format
+  fqdn  = str(instance.public_dns_name)
   login = ssh_user + '@' + fqdn 
+
+  # 
+  # attach volume to new instance
+  # 
+  # ebs_device looks like this '/dev/sdh' but will become /dev/xvdh on EC2 HVM
+  try:
+    connection.attach_volume(volume.id, instance.id, ebs_device)
+  except boto.exception.EC2ResponseError, e:
+    print 'Failed to attach volume:', volume.id
+    print e
+    sys.exit(1)
 
   # FIXME
   # if all attempts failed we have an instance that's not used
   # and an extra volume attached to it that's not used
   # maybe we should clean up.
 
-  # the very first time we will try 5 times to connect instance and give time to properly boot
+  # try 5 times to connect instance and give time to boot up
   for i in range(5):
     # exec_remote returns True or False
     if exec_remote(login, 'uname'):
@@ -225,6 +233,9 @@ def Main():
     print "ERROR could not connect host:", login  
     sys.exit(1)
 
+  #
+  # backup with dd or rsync
+  #
   if (options.method == 'dd'):
     print 'dd not implemented'
     # tar -cvf - {1} | ssh key \'dd of={2}\' (login, backupdir, str(attach)
@@ -270,6 +281,7 @@ def Main():
   #time.sleep(10)
   #connection.terminate_instances(instance_ids=[instance.id])
  
+  print volume.id
   sys.exit(0)
 
 def print_env():
