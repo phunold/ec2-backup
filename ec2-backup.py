@@ -1,13 +1,12 @@
 #!/usr/bin/env python
 
 import os
+import sys
+import optparse
 import subprocess
 from subprocess import PIPE
-import sys
-# FIXME catch ImportError: No module named boto.ec2
-import boto.ec2
-import optparse
 import time # for sleep
+import boto.ec2
 
 #
 # global settings
@@ -42,23 +41,28 @@ def fatal(msg):
   print 'FATAL %s: %s' % (now, msg)
   sys.exit(1)
 
-def exec_remote(login, remote_command):
+def exec_remote(login, ssh_opts, remote_command):
   # login contains 'ssh_user@ec2.host.amazon.com'
-  # -t simulate terminal required for sudo ???
+  # -t simulates terminal required for sudo
   # FIXME
   # StrictHostKeyChecking maybe delegate to user 
   # and make it part of EC2_BACKUP_FLAGS_SSH
-  command_list = ['ssh','-t','-o','StrictHostKeyChecking=no']
-
-  # get additional ssh options from environment and append to comamnd_list
-  if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
-    command_list.extend(os.environ['EC2_BACKUP_FLAGS_SSH'].split())
-
-  # add login user@target and the remote command to execute
-  command_list.append(login) # single string
-  command_list.extend(remote_command.split()) # multiple strings potentially
+  command_list = (['ssh','-t','-o','StrictHostKeyChecking=no']
+                 + ssh_opts.split()       # insert ssh options 
+                 + [login]                # add login user@target
+                 + remote_command.split()) # the string of commands to execute
 
   return execute(command_list)
+
+
+def run_shell(cmd):
+    info("running shell command: "+cmd)
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    output, error = process.communicate()
+    return_code = process.returncode
+    if return_code != 0:
+        info("non-zero return code for \"cmd\": "+error+"\n\nreturn_code="+str(return_code))
+    return (return_code, output, error)
 
 def execute(commands):
   # subprocess expects a list of arguments
@@ -66,6 +70,8 @@ def execute(commands):
   try:
     result = subprocess.check_output(commands, stderr=subprocess.STDOUT)
   except subprocess.CalledProcessError, error:
+    info(error.cmd)
+    info(error.output)
     info(error)
     return False
 
@@ -217,7 +223,7 @@ def Main():
     # set zone from this volume to make sure we can attach to instance
   else:
     volume = connection.create_volume(size, zone)
-    info('Creating volume of size: %s' % size)
+    info('Creating volume of size in zone: %s %s' % (size,zone))
 
     # wait until volume is ready
     status = volume.update()
@@ -251,30 +257,30 @@ def Main():
   # and an extra volume attached to it that's not used
 
   # try 5 times to connect instance and give time to boot up
-  for i in range(5):
-    # exec_remote returns True or False
-    if exec_remote(login, 'uname'):
+  for i in range(9):
+    if exec_remote(login, ssh_opts, 'uname'):
       break
     else:
-      time.sleep(10)
+      time.sleep(12)
   else:
-    fatal("ERROR could not connect host: %s" % login)
+    fatal("Could not connect to host: %s %s" % (login,ssh_opts))
 
   #
   # backup with dd or rsync
   #
-  # FIXME this is redundant to exec_remote
-  # get additional ssh options from environment
-  ssh_opts = ''
-  if 'EC2_BACKUP_FLAGS_SSH' in os.environ:
-    ssh_opts = os.environ['EC2_BACKUP_FLAGS_SSH']
   
   if (options.method == 'dd'):
-    dd_cmd = ['tar','-cvf', '-', backupdir, '|']
-    dd_cmd.extend(('ssh %s %s' % (ssh_opts, login)).split())
-    dd_cmd.append('\"sudo dd of=%s\"' % device)
+    #dd_cmd = (
+    #         ['tar','-cvf','-',backupdir,'|'] # tar base command
+    #         + ['ssh'] + ssh_opts.split() + [login]
+    ##         + ['"sudo dd of=%s\"' % device]
+    #       )
 
-    execute(dd_cmd)
+    (o,e,rc) = run_shell('tar -cvf - %s | ssh %s %s \"sudo dd of=%s\"' % (backupdir,ssh_opts,login,device))
+    print 'output', o
+    print 'error', e
+    print 'rc', rc
+
   else:
     #
     # Prepare mount point for rsync
@@ -283,16 +289,16 @@ def Main():
     # check commands executed sucessfully
     # 
     # check if block device exists
-    exec_remote(login, '[ -b %s ] && echo success' % device)
+    exec_remote(login, ssh_opts, '[ -b %s ] && echo success' % device)
     # create ext4 filesystem (other fstypes may feasible)
-    exec_remote(login, 'sudo mkfs.ext4 %s && echo success' % device )
+    exec_remote(login, ssh_opts, 'sudo mkfs.ext4 %s && echo success' % device )
     # create directory for mountpoint
-    exec_remote(login, 'sudo mkdir %s && echo success' % mountpoint)
+    exec_remote(login, ssh_opts, 'sudo mkdir %s && echo success' % mountpoint)
     # FIXME
     # rsync cannot change timestamps need additional mount flags set (atime?)
-    exec_remote(login, 'sudo mount %s %s && echo success' %(device,mountpoint))
+    exec_remote(login, ssh_opts, 'sudo mount %s %s && echo success' %(device,mountpoint))
     # chown to default ssh_user (ubuntu) for permission
-    exec_remote(login, 'sudo chown -R %s:%s /backup && echo success' % (ssh_user,ssh_user))
+    exec_remote(login, ssh_opts, 'sudo chown -R %s:%s /backup && echo success' % (ssh_user,ssh_user))
 
     #
     # rsync
@@ -321,3 +327,4 @@ def Main():
 #
 if __name__ == "__main__":
   Main()
+
