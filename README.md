@@ -1,8 +1,10 @@
 # README EC2-BACKUP
 
+https://github.com/phunold/ec2-backup
+
 ## Information
 
-We chose *boto.ec2* module for for this program for multiple reasons:
+We chose *boto.ec2* module for this program for multiple reasons:
 * learning (python) by doing
 * python boto.ec2 module for ease of use with EC2 communications
 * python subprocess allows for flexible interactions with shell commands
