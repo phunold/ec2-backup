@@ -47,36 +47,18 @@ def exec_remote(login, ssh_opts, remote_command):
   # FIXME
   # StrictHostKeyChecking maybe delegate to user 
   # and make it part of EC2_BACKUP_FLAGS_SSH
-  command_list = (['ssh','-t','-o','StrictHostKeyChecking=no']
-                 + ssh_opts.split()       # insert ssh options 
-                 + [login]                # add login user@target
-                 + remote_command.split()) # the string of commands to execute
+  ssh_cmd= 'ssh -t -o StrictHostKeyChecking=no %s %s %s' % (ssh_opts,login,remote_command)
+  return execute(ssh_cmd)
 
-  return execute(command_list)
-
-
-def run_shell(cmd):
-    info("running shell command: "+cmd)
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    output, error = process.communicate()
-    return_code = process.returncode
-    if return_code != 0:
-        info("non-zero return code for \"cmd\": "+error+"\n\nreturn_code="+str(return_code))
-    return (return_code, output, error)
-
-def execute(commands):
-  # subprocess expects a list of arguments
-  info(" ".join(commands))
-  try:
-    result = subprocess.check_output(commands, stderr=subprocess.STDOUT)
-  except subprocess.CalledProcessError, error:
-    info(error.cmd)
-    info(error.output)
-    info(error)
+def execute(cmd):
+  info(cmd)
+  proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+  stdout, stderr = proc.communicate()
+  rc = proc.returncode
+  if rc == 0:
+    return True
+  else:
     return False
-
-  info(result)
-  return True
 
 def connect_ec2(region):
   # Connect to EC2
@@ -270,16 +252,7 @@ def Main():
   #
   
   if (options.method == 'dd'):
-    #dd_cmd = (
-    #         ['tar','-cvf','-',backupdir,'|'] # tar base command
-    #         + ['ssh'] + ssh_opts.split() + [login]
-    ##         + ['"sudo dd of=%s\"' % device]
-    #       )
-
-    (o,e,rc) = run_shell('tar -cvf - %s | ssh %s %s \"sudo dd of=%s\"' % (backupdir,ssh_opts,login,device))
-    print 'output', o
-    print 'error', e
-    print 'rc', rc
+    execute('tar -cvf - %s | ssh %s %s \"sudo dd of=%s\"' % (backupdir,ssh_opts,login,device))
 
   else:
     #
@@ -303,11 +276,8 @@ def Main():
     #
     # rsync
     #
-    # execute function expects a "list" of commands
     # FIXME we create a mirror and not backup with --delete maybe remove it?
-    rsync_cmd = ['rsync','-avz', '--delete', '-e']
-    rsync_cmd.append('ssh %s' % ssh_opts)
-    rsync_cmd.extend(('%s %s:%s' % (backupdir,login,mountpoint)).split())
+    rsync_cmd = 'rsync -avz --delete -e \"ssh %s\" %s %s:%s' % (ssh_opts,backupdir,login,mountpoint)
 
     execute(rsync_cmd)
     
