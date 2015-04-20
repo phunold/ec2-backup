@@ -1,5 +1,8 @@
 #!/usr/bin/env python
 
+# author: Philipp Hunold <phunold@stevens.edu>
+# author: Georgios Kapoglis <gkapogli@stevens.edu>
+
 import os
 import sys
 import optparse
@@ -284,9 +287,9 @@ def Main():
   #
   # finally terminate the instance
   #
-  #print 'Cleanup time ID terminating: ', instance.id
-  #time.sleep(10)
-  #connection.terminate_instances(instance_ids=[instance.id])
+  info('Cleanup time terminating instance: %s' % instance.id)
+  time.sleep(10)
+  connection.terminate_instances(instance_ids=[instance.id])
  
   # output volume identifier in any case
   print volume.id
